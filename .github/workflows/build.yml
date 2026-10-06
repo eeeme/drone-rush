@@ -1,0 +1,117 @@
+# main に push するたびに WebGL 版をビルドして GitHub Pages に公開する。
+# Actions タブの「Run workflow」で android にチェックを入れると、Google Play 用の .aab も作る。
+#
+# 必要な Secrets（Settings > Secrets and variables > Actions）
+#   UNITY_LICENSE / UNITY_EMAIL / UNITY_PASSWORD   … Unity Personal ライセンス
+#   ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASS / ANDROID_KEYALIAS_NAME / ANDROID_KEYALIAS_PASS
+#                                                  … Android の署名鍵（.aab を作るときだけ）
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      android:
+        description: "Google Play 用の .aab もビルドする"
+        type: boolean
+        default: false
+      versionCode:
+        description: "Android の versionCode（ストアに上げるたびに +1）"
+        default: "1"
+      versionName:
+        description: "表示用バージョン（例 0.1.0）"
+        default: "0.1.0"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+  UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+  UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+
+jobs:
+  webgl:
+    name: WebGL build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-WebGL-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: Library-WebGL-
+
+      - uses: game-ci/unity-builder@v4
+        with:
+          targetPlatform: WebGL
+          buildName: drone-rush
+          buildMethod: DroneRush.EditorTools.BuildScript.BuildWebGL
+          versioning: None
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/WebGL/drone-rush
+
+  deploy:
+    name: Publish to GitHub Pages
+    needs: webgl
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  android:
+    name: Android build (.aab)
+    if: github.event_name == 'workflow_dispatch' && inputs.android
+    runs-on: ubuntu-latest
+    steps:
+      # Android 用の Unity イメージは大きいので、ランナーの空き容量を確保する
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-Android-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: Library-Android-
+
+      - uses: game-ci/unity-builder@v4
+        with:
+          targetPlatform: Android
+          buildName: drone-rush
+          buildMethod: DroneRush.EditorTools.BuildScript.BuildAndroid
+          androidExportType: androidAppBundle
+          versioning: Custom
+          version: ${{ inputs.versionName }}
+          androidVersionCode: ${{ inputs.versionCode }}
+          androidKeystoreName: upload.keystore
+          androidKeystoreBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          androidKeystorePass: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          androidKeyaliasName: ${{ secrets.ANDROID_KEYALIAS_NAME }}
+          androidKeyaliasPass: ${{ secrets.ANDROID_KEYALIAS_PASS }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drone-rush-aab-${{ inputs.versionCode }}
+          path: build/Android/*.aab
+          if-no-files-found: error
